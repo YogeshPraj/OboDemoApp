@@ -1,5 +1,4 @@
 using CMSPDemo.PartnerAPI.Auth;
-using CMSPDemo.PartnerAPI.Claims;
 using CMSPDemo.PartnerAPI.Mcp;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Identity.Web;
@@ -45,7 +44,8 @@ builder.Services
     .WithHttpTransport()
     .WithTools<ClaimsTools>();
 
-// ── Swagger ───────────────────────────────────────────────────────────────────
+// ── Controllers + Swagger ─────────────────────────────────────────────────────
+builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
@@ -62,49 +62,15 @@ app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 
-// ── Flavor 1: Service-to-Service (BFF calls with its own app token) ───────────
-app.MapGet("/api/s2s/claims", (HttpContext ctx) =>
-        Results.Ok(ClaimsResponse.From("partner-s2s", ctx.User)))
-   .RequireAuthorization(AuthPolicies.S2SOnly)
-   .WithName("S2SClaims")
-   .WithSummary("Returns claims; accepts only app-only (S2S) tokens from the BFF.")
-   .WithOpenApi();
+// REST routes live in src/PartnerAPI/Controllers/.
+app.MapControllers();
 
-// ── Flavor 2: OBO — BFF-exchanged user token ──────────────────────────────────
-app.MapGet("/api/obo/claims", (HttpContext ctx) =>
-        Results.Ok(ClaimsResponse.From("partner-obo", ctx.User)))
-   .RequireAuthorization(AuthPolicies.OboOnly)
-   .WithName("OboClaims")
-   .WithSummary("Returns claims; accepts delegated user tokens (OBO from BFF).")
-   .WithOpenApi();
-
-// OBO → Graph (real OBO chain: user → BFF → PartnerAPI → Graph)
-app.MapGet("/api/obo/graph-me", async (ITokenAcquisition tokenAcq, IHttpClientFactory httpFactory) =>
-{
-    var graphToken = await tokenAcq.GetAccessTokenForUserAsync(new[] { "User.Read" });
-    using var http = httpFactory.CreateClient();
-    http.DefaultRequestHeaders.Authorization = new("Bearer", graphToken);
-    using var resp = await http.GetAsync("https://graph.microsoft.com/v1.0/me");
-    var body = await resp.Content.ReadAsStringAsync();
-    return Results.Content(body, "application/json", System.Text.Encoding.UTF8, (int)resp.StatusCode);
-})
-.RequireAuthorization(AuthPolicies.OboOnly)
-.WithName("OboGraphMe")
-.WithSummary("Calls Graph /me via OBO chain: Web → BFF → PartnerAPI → Graph.")
-.WithOpenApi();
-
-// ── Flavor 3 & 4: MCP streamable, each gated by its auth policy ───────────────
+// MCP endpoints stay as middleware-mounted routes — the streamable-HTTP transport
+// uses its own request pipeline and is not a controller concern.
 app.MapMcp("/mcp/s2s").RequireAuthorization(AuthPolicies.S2SOnly)
    .WithMetadata(new EndpointNameMetadata("McpS2S"));
 
 app.MapMcp("/mcp/obo").RequireAuthorization(AuthPolicies.OboOnly)
    .WithMetadata(new EndpointNameMetadata("McpObo"));
-
-app.MapGet("/api/health", () => Results.Ok(new
-{
-    service = "PartnerAPI",
-    ok = true,
-    ts = DateTimeOffset.UtcNow
-})).WithName("PartnerApiHealth");
 
 app.Run();

@@ -1,6 +1,4 @@
 using CMSPDemo.API.Auth;
-using CMSPDemo.API.Endpoints;
-using CMSPDemo.API.Helpers;
 using CMSPDemo.API.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Identity.Web;
@@ -13,13 +11,13 @@ builder.Services.AddHttpContextAccessor();
 // ────────────────────────────────────────────────────────────────────────────
 // Session-based auth (server-side OIDC, Emerald-style)
 //
-//  • InMemorySessionStore   — holds UserSession objects keyed by session id
-//  • InMemoryPendingSignInStore — holds (state, codeVerifier, returnUrl) during sign-in
-//  • SessionTokenAcquirer   — OBO from the session's stored access token
+//  • InMemorySessionStore        — holds UserSession objects keyed by session id
+//  • InMemoryPendingSignInStore  — holds (state, codeVerifier, returnUrl) during sign-in
+//  • SessionTokenAcquirer        — OBO from the session's stored access token
 // ────────────────────────────────────────────────────────────────────────────
-builder.Services.AddSingleton<ISessionStore,         InMemorySessionStore>();
-builder.Services.AddSingleton<IPendingSignInStore,   InMemoryPendingSignInStore>();
-builder.Services.AddScoped<ISessionTokenAcquirer,    SessionTokenAcquirer>();
+builder.Services.AddSingleton<ISessionStore,       InMemorySessionStore>();
+builder.Services.AddSingleton<IPendingSignInStore, InMemoryPendingSignInStore>();
+builder.Services.AddScoped<ISessionTokenAcquirer,  SessionTokenAcquirer>();
 
 // ────────────────────────────────────────────────────────────────────────────
 // AuthN — multi-scheme.
@@ -27,17 +25,13 @@ builder.Services.AddScoped<ISessionTokenAcquirer,    SessionTokenAcquirer>();
 //  The default scheme "BearerOrSession" inspects the request:
 //    • Authorization: Bearer …  → JwtBearer (Microsoft.Identity.Web)
 //    • else                     → Session   (reads CMSP_SESSION cookie)
-//
-//  That lets a single endpoint accept both MSAL-mode and server-OIDC-mode
-//  callers without changing controller-level attributes.
 // ────────────────────────────────────────────────────────────────────────────
-var authBuilder = builder.Services
-    .AddAuthentication(opts =>
-    {
-        opts.DefaultScheme             = "BearerOrSession";
-        opts.DefaultAuthenticateScheme = "BearerOrSession";
-        opts.DefaultChallengeScheme    = "BearerOrSession";
-    });
+var authBuilder = builder.Services.AddAuthentication(opts =>
+{
+    opts.DefaultScheme             = "BearerOrSession";
+    opts.DefaultAuthenticateScheme = "BearerOrSession";
+    opts.DefaultChallengeScheme    = "BearerOrSession";
+});
 
 authBuilder.AddPolicyScheme("BearerOrSession", "BearerOrSession", opts =>
 {
@@ -60,17 +54,13 @@ authBuilder
         },
         idOptions => builder.Configuration.Bind("AzureAd", idOptions),
         jwtBearerScheme: JwtBearerDefaults.AuthenticationScheme)
-    .EnableTokenAcquisitionToCallDownstreamApi(_ => { })     // OBO + S2S via ITokenAcquisition
-    .AddDownstreamApi("PartnerApi",                          // typed HttpClient + token injection
-        builder.Configuration.GetSection("DownstreamApis:PartnerApi"))
+    .EnableTokenAcquisitionToCallDownstreamApi(_ => { })
+    .AddDownstreamApi("PartnerApi", builder.Configuration.GetSection("DownstreamApis:PartnerApi"))
     .AddInMemoryTokenCaches();
 
 authBuilder.AddScheme<SessionAuthenticationOptions, SessionAuthenticationHandler>(
     SessionAuthenticationHandler.SchemeName, _ => { });
 
-// ────────────────────────────────────────────────────────────────────────────
-// AuthZ — BFF-specific policies (now multi-scheme-aware)
-// ────────────────────────────────────────────────────────────────────────────
 builder.Services.AddAuthorization(BffAuthPolicies.Register);
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -104,8 +94,9 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
     .WithExposedHeaders("WWW-Authenticate", "Mcp-Session-Id")));
 
 // ────────────────────────────────────────────────────────────────────────────
-// Swagger
+// Controllers + Swagger
 // ────────────────────────────────────────────────────────────────────────────
+builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
@@ -129,28 +120,7 @@ app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 
-// ────────────────────────────────────────────────────────────────────────────
-// Routes
-// ────────────────────────────────────────────────────────────────────────────
-
-// Server-OIDC sign-in (/api/auth/*) + me + sign-out
-app.MapAuthEndpoints();
-
-// Proxy routes: /api/me, /api/proxy/obo/*, /api/proxy/s2s/*, /api/proxy/mcp-*
-app.MapProxyEndpoints();
-
-// S2S helper: /api/helpers/acquire-s2s
-app.MapS2SHelper();
-
-// Phase 3 — widget token broker: /api/widget/mcs-token
-app.MapWidgetTokenEndpoint();
-
-// Health check (anonymous)
-app.MapGet("/api/health", () => Results.Ok(new
-{
-    service = "BFF API",
-    ok      = true,
-    ts      = DateTimeOffset.UtcNow
-})).WithName("BffHealth");
+// All BFF routes are MVC controllers under src/API/Controllers/.
+app.MapControllers();
 
 app.Run();
