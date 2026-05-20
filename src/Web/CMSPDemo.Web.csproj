@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- Keep node_modules and build output out of Solution Explorer -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);node_modules\**;dist\**;dist-ssr\**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <!-- Show all web source files in Solution Explorer (non-C# files) -->
+  <ItemGroup>
+    <None Include="**\*" Exclude="node_modules\**;dist\**;dist-ssr\**;**\*.cs;**\*.csproj;**\*.user" />
+  </ItemGroup>
+
+  <!-- Run npm install automatically if node_modules is missing -->
+  <Target Name="NpmInstall" BeforeTargets="BeforeBuild" Condition="!Exists('$(MSBuildProjectDirectory)\node_modules')">
+    <Message Text="node_modules not found — running npm install..." Importance="high" />
+    <Exec Command="npm install" WorkingDirectory="$(MSBuildProjectDirectory)" />
+  </Target>
+</Project>

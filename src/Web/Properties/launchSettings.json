@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "Vite Dev Server": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "launchUrl": "http://localhost:5173",
+      "environmentVariables": {}
+    }
+  }
+}

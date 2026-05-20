@@ -1,0 +1,21 @@
+# Setup state — contains resource names but NO secrets
+.setup-state.json
+
+# Local environment (contains real client IDs)
+src/Web/.env
+src/Web/.env.production
+
+# .NET
+**/bin/
+**/obj/
+*.user
+
+# Node
+**/node_modules/
+**/dist/
+**/dist-ssr/
+
+# IDE
+.vs/
+.vscode/settings.json
+*.suo
