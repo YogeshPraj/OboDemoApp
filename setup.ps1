@@ -303,6 +303,15 @@ az ad app permission add --id $state.bffAppId `
     --api-permissions "$($state.s2sAppRoleId)=Role" --only-show-errors 2>$null
 Write-Ok "BFF → OBOPartnerAPIApp permissions: Scope (OBO) + Role (S2S)"
 
+# BFF → Microsoft Graph: delegated User.Read.
+# Required by /api/me on the BFF — it does OBO to Graph /me directly.
+$graphAppId    = "00000003-0000-0000-c000-000000000000"
+$graphUserRead = "e1fe6dd8-ba31-4d61-89e7-88639da4683d"
+az ad app permission add --id $state.bffAppId `
+    --api $graphAppId `
+    --api-permissions "$graphUserRead=Scope" --only-show-errors 2>$null
+Write-Ok "BFF → Microsoft Graph User.Read (delegated) permission added"
+
 # Pre-authorize BFF so users see no consent prompt for OBO
 Patch-AppManifest -ObjId $state.oboObjId -Body @{
     api = @{
