@@ -1,23 +1,37 @@
 import { useEffect, useMemo, useState } from 'react';
 import { MsalProvider, useMsal, useIsAuthenticated } from '@azure/msal-react';
-import {
-  AuthenticationResult,
-  PublicClientApplication,
-  InteractionType,
-} from '@azure/msal-browser';
+import { PublicClientApplication } from '@azure/msal-browser';
 import { initMsal, DEFAULT_CLIENT_ID } from './auth/msalConfig';
+import { MsalAuthProvider, SessionAuthProvider, useAuth } from './auth/AuthContext';
 import { PreSignIn, SignInConfig } from './components/PreSignIn';
 import { MainApp } from './components/MainApp';
 import { logger } from './utils/logger';
 
+const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? 'http://localhost:5080';
+
 export default function App() {
   const [config, setConfig] = useState<SignInConfig | null>(null);
+
+  if (!config) {
+    return (
+      <div className="app-shell">
+        <PreSignIn onSubmit={setConfig} />
+      </div>
+    );
+  }
+
+  if (config.mode === 'server-oidc') {
+    return <ServerOidcRoot config={config} onReset={() => setConfig(null)} />;
+  }
+  return <MsalRoot config={config} onReset={() => setConfig(null)} />;
+}
+
+// ── MSAL flow (Popup / Redirect) ────────────────────────────────────────────
+function MsalRoot({ config, onReset }: { config: SignInConfig; onReset: () => void }) {
   const [pca, setPca] = useState<PublicClientApplication | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Reset MSAL instance whenever the user changes the client ID.
   useEffect(() => {
-    if (!config) return;
     let cancelled = false;
     (async () => {
       try {
@@ -29,49 +43,45 @@ export default function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [config?.clientId]);
-
-  if (!config) {
-    return (
-      <div className="app-shell">
-        <PreSignIn onSubmit={setConfig} />
-      </div>
-    );
-  }
+  }, [config.clientId]);
 
   if (!pca) {
     return (
       <div className="app-shell">
-        <div className="app-body"><div className="card">Initializing MSAL… {error && <div className="pill err">{error}</div>}</div></div>
+        <div className="app-body">
+          <div className="card">Initializing MSAL… {error && <div className="pill err">{error}</div>}</div>
+        </div>
       </div>
     );
   }
 
   return (
     <MsalProvider instance={pca}>
-      <Authenticated config={config} onReset={() => setConfig(null)} />
+      <MsalSignInGate config={config} onReset={onReset} />
     </MsalProvider>
   );
 }
 
-function Authenticated({ config, onReset }: { config: SignInConfig; onReset: () => void }) {
-  const { instance, accounts } = useMsal();
+function MsalSignInGate({ config, onReset }: { config: SignInConfig; onReset: () => void }) {
+  const { instance } = useMsal();
   const isAuthed = useIsAuthenticated();
   const [signingIn, setSigningIn] = useState(false);
-  const [authResult, setAuthResult] = useState<AuthenticationResult | null>(null);
 
   const scopes = useMemo(() => config.scopes.filter(Boolean), [config.scopes]);
+  // The first BFF-shaped scope the user picked (or fall back to api://<clientId>/access_as_user).
+  const bffScope = useMemo(() => {
+    const fromUser = scopes.find(s => s.startsWith('api://') && !s.endsWith('/.default'));
+    if (fromUser) return fromUser;
+    return `api://${config.clientId || DEFAULT_CLIENT_ID}/access_as_user`;
+  }, [scopes, config.clientId]);
 
   async function doSignIn() {
     setSigningIn(true);
     try {
-      const req = { scopes };
-      const result = config.interaction === InteractionType.Popup
-        ? await instance.loginPopup(req)
-        : await (async () => { await instance.loginRedirect(req); return null; })();
-      if (result) {
-        setAuthResult(result);
-        logger.info('app', `signed in as ${result.account?.username}`);
+      if (config.mode === 'msal-popup') {
+        await instance.loginPopup({ scopes });
+      } else {
+        await instance.loginRedirect({ scopes });
       }
     } catch (e: any) {
       logger.error('app', 'sign-in failed', e);
@@ -80,40 +90,64 @@ function Authenticated({ config, onReset }: { config: SignInConfig; onReset: () 
     }
   }
 
-  async function silentToken() {
-    if (!accounts[0]) return null;
-    try {
-      const r = await instance.acquireTokenSilent({ scopes, account: accounts[0] });
-      setAuthResult(r);
-      return r;
-    } catch (e) {
-      logger.warn('app', 'silent token failed, falling back to interactive', e);
-      const r = await instance.acquireTokenPopup({ scopes, account: accounts[0] });
-      setAuthResult(r);
-      return r;
-    }
-  }
-
   if (!isAuthed) {
     return (
       <div className="app-shell">
         <header className="app-header">
-          <h1>CMSP Demo — Sign in</h1>
+          <h1>CMSP Demo — Sign in (MSAL {config.mode === 'msal-popup' ? 'Popup' : 'Redirect'})</h1>
           <button className="secondary" onClick={onReset}>Change config</button>
         </header>
         <div className="app-body">
           <div className="card col" style={{ maxWidth: 720 }}>
+            <div className="row"><strong>Client ID:</strong> <code>{config.clientId || DEFAULT_CLIENT_ID}</code></div>
+            <div className="row"><strong>Scopes:</strong> <code>{scopes.join(' ') || '(none — OIDC only)'}</code></div>
+            <div className="row"><strong>Mode:</strong> <code>{config.mode}</code></div>
+            <div className="row"><button onClick={doSignIn} disabled={signingIn}>{signingIn ? 'Signing in…' : 'Sign in'}</button></div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <MsalAuthProvider bffScope={bffScope}>
+      <MainAppHost onReset={onReset} />
+    </MsalAuthProvider>
+  );
+}
+
+// ── Server-OIDC flow ────────────────────────────────────────────────────────
+function ServerOidcRoot({ config, onReset }: { config: SignInConfig; onReset: () => void }) {
+  return (
+    <SessionAuthProvider>
+      <ServerOidcGate onReset={onReset} />
+    </SessionAuthProvider>
+  );
+}
+
+function ServerOidcGate({ onReset }: { onReset: () => void }) {
+  const { isAuthenticated } = useAuth();
+
+  function signIn() {
+    const url = `${API_BASE}/api/auth/sign-in?returnUrl=${encodeURIComponent(window.location.pathname || '/')}`;
+    window.location.href = url;
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <div className="app-shell">
+        <header className="app-header">
+          <h1>CMSP Demo — Sign in (Server OIDC)</h1>
+          <button className="secondary" onClick={onReset}>Change config</button>
+        </header>
+        <div className="app-body">
+          <div className="card col" style={{ maxWidth: 720 }}>
+            <p className="muted" style={{ margin: 0 }}>
+              The BFF will redeem the auth code with <code>{'{AadAppIdUri}/.default'}</code>. The browser
+              will only receive an HttpOnly <code>CMSP_SESSION</code> cookie. Tokens never leave the BFF.
+            </p>
             <div className="row">
-              <strong>Client ID:</strong> <code>{config.clientId || DEFAULT_CLIENT_ID}</code>
-            </div>
-            <div className="row">
-              <strong>Scopes:</strong> <code>{scopes.join(' ') || '(none — OIDC only)'}</code>
-            </div>
-            <div className="row">
-              <strong>Interaction:</strong> <code>{config.interaction === InteractionType.Popup ? 'Popup' : 'Redirect'}</code>
-            </div>
-            <div className="row">
-              <button onClick={doSignIn} disabled={signingIn}>{signingIn ? 'Signing in…' : 'Sign in'}</button>
+              <button onClick={signIn}>Sign in with Server OIDC</button>
             </div>
           </div>
         </div>
@@ -121,5 +155,10 @@ function Authenticated({ config, onReset }: { config: SignInConfig; onReset: () 
     );
   }
 
-  return <MainApp config={config} onReset={onReset} authResult={authResult} onAcquireToken={silentToken} />;
+  return <MainAppHost onReset={onReset} />;
+}
+
+// ── Common host — used by both flows once authenticated ─────────────────────
+function MainAppHost({ onReset }: { onReset: () => void }) {
+  return <MainApp onReset={onReset} />;
 }

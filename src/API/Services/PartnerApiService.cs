@@ -1,3 +1,4 @@
+using CMSPDemo.API.Auth;
 using Microsoft.Identity.Web;
 using System.Net.Http.Headers;
 using System.Security.Claims;
@@ -19,6 +20,8 @@ public sealed class PartnerApiService
 {
     private readonly IHttpClientFactory  _http;
     private readonly ITokenAcquisition   _tokens;
+    private readonly ISessionTokenAcquirer _sessionTokens;
+    private readonly IHttpContextAccessor _ctx;
     private readonly IConfiguration      _config;
     private readonly ILogger<PartnerApiService> _log;
 
@@ -29,14 +32,27 @@ public sealed class PartnerApiService
     public PartnerApiService(
         IHttpClientFactory http,
         ITokenAcquisition tokens,
+        ISessionTokenAcquirer sessionTokens,
+        IHttpContextAccessor ctx,
         IConfiguration config,
         ILogger<PartnerApiService> log)
     {
-        _http   = http;
-        _tokens = tokens;
-        _config = config;
-        _log    = log;
+        _http          = http;
+        _tokens        = tokens;
+        _sessionTokens = sessionTokens;
+        _ctx           = ctx;
+        _config        = config;
+        _log           = log;
     }
+
+    /// <summary>True when the current request was authenticated via the server-OIDC session cookie
+    /// (rather than a bearer token). Determines which OBO path to take.</summary>
+    private bool IsSessionAuth =>
+        _ctx.HttpContext?.User.FindFirst(SessionAuthenticationHandler.AuthModeClaimType)?.Value
+            == SessionAuthenticationHandler.AuthModeClaimValue;
+
+    private string? CurrentSessionId =>
+        _ctx.HttpContext?.User.FindFirst(SessionAuthenticationHandler.SessionIdClaimType)?.Value;
 
     // ─── OBO (user delegated) ────────────────────────────────────────────────
 
@@ -82,13 +98,28 @@ public sealed class PartnerApiService
         string token;
         try
         {
-            token = isApp
-                ? await _tokens.GetAccessTokenForAppAsync(AppScopes.First())
-                : await _tokens.GetAccessTokenForUserAsync(OboScopes);
+            if (isApp)
+            {
+                // App-only — same code path in both auth modes (BFF's own credentials).
+                token = await _tokens.GetAccessTokenForAppAsync(AppScopes.First());
+            }
+            else if (IsSessionAuth)
+            {
+                // Server-OIDC path: BFF acquired the user's access token at sign-in
+                // and stored it in the session. Use it as the OBO user assertion.
+                var sid = CurrentSessionId
+                    ?? throw new InvalidOperationException("Session auth marker present but session id missing.");
+                token = await _sessionTokens.GetTokenForScopeAsync(sid, OboScopes, ct);
+            }
+            else
+            {
+                // Bearer path: Microsoft.Identity.Web reads the inbound JWT and OBOs it.
+                token = await _tokens.GetAccessTokenForUserAsync(OboScopes);
+            }
         }
         catch (Exception ex)
         {
-            _log.LogError(ex, "Token acquisition failed (isApp={IsApp})", isApp);
+            _log.LogError(ex, "Token acquisition failed (isApp={IsApp}, session={IsSession})", isApp, IsSessionAuth);
             throw;
         }
 

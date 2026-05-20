@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
-import { InteractionType } from '@azure/msal-browser';
 import { COMMON_SCOPES, DEFAULT_CLIENT_ID } from '../auth/msalConfig';
+
+export type SignInMode = 'msal-popup' | 'msal-redirect' | 'server-oidc';
 
 export interface SignInConfig {
   clientId: string;
-  scopes: string[];
-  interaction: InteractionType;
+  scopes:   string[];
+  mode:     SignInMode;
 }
 
 // ── Expander ────────────────────────────────────────────────────────────────
@@ -39,10 +40,10 @@ function Expander({
 
 // ── PreSignIn ────────────────────────────────────────────────────────────────
 export function PreSignIn({ onSubmit }: { onSubmit: (cfg: SignInConfig) => void }) {
-  const [clientId, setClientId]     = useState('');
-  const [picked, setPicked]         = useState<Set<string>>(new Set(['openid', 'profile', 'offline_access', 'User.Read']));
-  const [custom, setCustom]         = useState('');
-  const [interaction, setInteraction] = useState<InteractionType>(InteractionType.Popup);
+  const [clientId, setClientId] = useState('');
+  const [picked, setPicked]     = useState<Set<string>>(new Set(['openid', 'profile', 'offline_access', 'User.Read']));
+  const [custom, setCustom]     = useState('');
+  const [mode, setMode]         = useState<SignInMode>('msal-popup');
 
   // 1 and 3 open by default, 2 collapsed
   const [open1, setOpen1] = useState(true);
@@ -66,7 +67,7 @@ export function PreSignIn({ onSubmit }: { onSubmit: (cfg: SignInConfig) => void 
 
   function submit() {
     const customScopes = custom.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
-    onSubmit({ clientId: clientId.trim(), scopes: [...picked, ...customScopes], interaction });
+    onSubmit({ clientId: clientId.trim(), scopes: [...picked, ...customScopes], mode });
   }
 
   return (
@@ -125,16 +126,21 @@ export function PreSignIn({ onSubmit }: { onSubmit: (cfg: SignInConfig) => void 
 
           {/* ── 3) Sign-in style ── */}
           <Expander num={3} title="Sign-in style" open={open3} onToggle={() => setOpen3(!open3)}>
-            <div className="row">
+            <div className="col" style={{ gap: '0.5rem' }}>
               <label>
-                <input type="radio" checked={interaction === InteractionType.Popup}
-                  onChange={() => setInteraction(InteractionType.Popup)} />
-                {' '}Popup
+                <input type="radio" checked={mode === 'msal-popup'} onChange={() => setMode('msal-popup')} />
+                {' '}<strong>MSAL · Popup</strong>{' '}
+                <span className="muted">— browser holds the token (sessionStorage).</span>
               </label>
               <label>
-                <input type="radio" checked={interaction === InteractionType.Redirect}
-                  onChange={() => setInteraction(InteractionType.Redirect)} />
-                {' '}Redirect
+                <input type="radio" checked={mode === 'msal-redirect'} onChange={() => setMode('msal-redirect')} />
+                {' '}<strong>MSAL · Redirect</strong>{' '}
+                <span className="muted">— browser holds the token; full-page redirect to Entra.</span>
+              </label>
+              <label>
+                <input type="radio" checked={mode === 'server-oidc'} onChange={() => setMode('server-oidc')} />
+                {' '}<strong>Server OIDC</strong>{' '}
+                <span className="muted">— BFF redeems the auth code; browser holds only a session cookie.</span>
               </label>
             </div>
           </Expander>

@@ -1,19 +1,18 @@
 import { useState } from 'react';
-import { AuthenticationResult } from '@azure/msal-browser';
-import { useMsal } from '@azure/msal-react';
-import { SignInConfig } from '../PreSignIn';
+import { useAuth } from '../../auth/AuthContext';
 import { logger } from '../../utils/logger';
 
 type Mode = 'rest' | 'mcp';
-type AuthMode = 'user' | 's2s' | 'none';
+type RequestAuthMode = 'user' | 's2s' | 'none';
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? 'http://localhost:5080';
 
 // All Web traffic goes to the BFF (src/API, port 5080).
 // The BFF then forwards to PartnerAPI (src/PartnerAPI, port 5081) with
 // the correct token (OBO for user flows, S2S for app flows).
-const PRESETS: { label: string; mode: Mode; method: string; url: string; auth: AuthMode }[] = [
+const PRESETS: { label: string; mode: Mode; method: string; url: string; auth: RequestAuthMode }[] = [
   { label: 'BFF · Who am I?',                     mode: 'rest', method: 'GET',  url: `${API_BASE}/api/me`,                      auth: 'user' },
+  { label: 'BFF · Auth me (session-aware)',       mode: 'rest', method: 'GET',  url: `${API_BASE}/api/auth/me`,                 auth: 'user' },
   { label: 'BFF → PartnerAPI · OBO claims',       mode: 'rest', method: 'GET',  url: `${API_BASE}/api/proxy/obo/claims`,        auth: 'user' },
   { label: 'BFF → PartnerAPI · OBO → Graph /me',  mode: 'rest', method: 'GET',  url: `${API_BASE}/api/proxy/obo/graph-me`,      auth: 'user' },
   { label: 'BFF → PartnerAPI · S2S claims',       mode: 'rest', method: 'GET',  url: `${API_BASE}/api/proxy/s2s/claims`,        auth: 'user' },
@@ -21,14 +20,8 @@ const PRESETS: { label: string; mode: Mode; method: string; url: string; auth: A
   { label: 'BFF → PartnerAPI · MCP S2S',          mode: 'mcp',  method: 'POST', url: `${API_BASE}/api/proxy/mcp-s2s`,           auth: 'user' },
 ];
 
-export function OboTab({
-  config, authResult, onAcquireToken,
-}: {
-  config: SignInConfig;
-  authResult: AuthenticationResult | null;
-  onAcquireToken: () => Promise<AuthenticationResult | null>;
-}) {
-  const { instance, accounts } = useMsal();
+export function OboTab() {
+  const auth = useAuth();
   const [mode, setMode] = useState<Mode>('rest');
   const [method, setMethod] = useState('GET');
   const [url, setUrl] = useState(`${API_BASE}/api/proxy/obo/claims`);
@@ -40,9 +33,8 @@ export function OboTab({
   const [mcpParams, setMcpParams] = useState('{}');
   const [mcpSession, setMcpSession] = useState<string | null>(null);
 
-  // Auth
-  const [authMode, setAuthMode] = useState<AuthMode>('user');
-  const [userScope, setUserScope] = useState(config.scopes.find((s) => s.includes('/.default') || s.includes('access_as_user')) ?? config.scopes[0] ?? '');
+  // Request auth (separate from app-level sign-in mode)
+  const [reqAuth, setReqAuth] = useState<RequestAuthMode>('user');
   const [tenantId, setTenantId]   = useState('');
   const [s2sClientId, setS2sClientId] = useState('');
   const [kvUrl, setKvUrl]         = useState('');
@@ -55,26 +47,14 @@ export function OboTab({
   function applyPreset(label: string) {
     const p = PRESETS.find((x) => x.label === label);
     if (!p) return;
-    setMode(p.mode); setMethod(p.method); setUrl(p.url); setAuthMode(p.auth);
+    setMode(p.mode); setMethod(p.method); setUrl(p.url); setReqAuth(p.auth);
     if (p.mode === 'mcp') { setMcpMethod('tools/list'); setMcpParams('{}'); }
     logger.info('obo', `applied preset: ${label}`);
   }
 
-  async function acquireUserToken(): Promise<string | null> {
-    const account = accounts[0];
-    if (!account) return null;
-    try {
-      const r = await instance.acquireTokenSilent({ scopes: userScope.split(/[\s,]+/).filter(Boolean), account });
-      return r.accessToken;
-    } catch (e) {
-      logger.warn('obo', 'silent token failed, prompting', e);
-      const r = await instance.acquireTokenPopup({ scopes: userScope.split(/[\s,]+/).filter(Boolean), account });
-      return r.accessToken;
-    }
-  }
-
   async function acquireS2STokenViaHelper(): Promise<string | null> {
-    const resp = await fetch(`${API_BASE}/api/helpers/acquire-s2s`, {
+    // Hits the BFF helper using whichever auth mode is active.
+    const resp = await auth.authFetch(`${API_BASE}/api/helpers/acquire-s2s`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -98,13 +78,8 @@ export function OboTab({
     setResponse(null);
     const t0 = performance.now();
     try {
-      let token: string | null = null;
-      if (authMode === 'user') token = await acquireUserToken();
-      else if (authMode === 's2s') token = await acquireS2STokenViaHelper();
-
       let h: Record<string, string> = {};
       try { h = headers.trim() ? JSON.parse(headers) : {}; } catch { /* free-form */ }
-      if (token) h['Authorization'] = `Bearer ${token}`;
 
       let reqBody: string | undefined;
       let actualUrl = url;
@@ -125,8 +100,20 @@ export function OboTab({
         if (!h['Content-Type']) h['Content-Type'] = 'application/json';
       }
 
-      logger.info('obo', `→ ${actualMethod} ${actualUrl}`, { authMode, mode });
-      const resp = await fetch(actualUrl, { method: actualMethod, headers: h, body: reqBody });
+      logger.info('obo', `→ ${actualMethod} ${actualUrl}`, { reqAuth, mode, authMode: auth.mode });
+
+      let resp: Response;
+      if (reqAuth === 'user') {
+        // Use whichever mode is currently active (MSAL Bearer or session cookie).
+        resp = await auth.authFetch(actualUrl, { method: actualMethod, headers: h, body: reqBody });
+      } else if (reqAuth === 's2s') {
+        const s2sToken = await acquireS2STokenViaHelper();
+        if (s2sToken) h['Authorization'] = `Bearer ${s2sToken}`;
+        resp = await fetch(actualUrl, { method: actualMethod, headers: h, body: reqBody });
+      } else {
+        resp = await fetch(actualUrl, { method: actualMethod, headers: h, body: reqBody });
+      }
+
       const respHeaders: Record<string, string> = {};
       resp.headers.forEach((v, k) => { respHeaders[k] = v; });
       const sid = resp.headers.get('Mcp-Session-Id');
@@ -203,33 +190,26 @@ export function OboTab({
       </div>
 
       <div className="card col">
-        <strong>Authentication</strong>
+        <strong>Authentication for this request</strong>
         <div className="row">
-          <label><input type="radio" checked={authMode === 'user'} onChange={() => setAuthMode('user')} /> User (OBO via MSAL)</label>
-          <label><input type="radio" checked={authMode === 's2s'}  onChange={() => setAuthMode('s2s')}  /> Service-to-Service (client cert via Key Vault)</label>
-          <label><input type="radio" checked={authMode === 'none'} onChange={() => setAuthMode('none')} /> None</label>
+          <label><input type="radio" checked={reqAuth === 'user'} onChange={() => setReqAuth('user')} /> User ({auth.mode === 'msal' ? 'Bearer via MSAL' : 'CMSP_SESSION cookie'})</label>
+          <label><input type="radio" checked={reqAuth === 's2s'}  onChange={() => setReqAuth('s2s')}  /> Service-to-Service (client cert via Key Vault)</label>
+          <label><input type="radio" checked={reqAuth === 'none'} onChange={() => setReqAuth('none')} /> None</label>
         </div>
 
-        {authMode === 'user' && (
-          <div className="col">
-            <span className="muted">
-              The Web sends a bearer token scoped to the <strong>BFF</strong> (<code>api://&lt;bff-app-id&gt;/access_as_user</code>).
-              The BFF then OBO-exchanges it for a PartnerAPI token — the Web never talks to PartnerAPI directly.
-            </span>
-            <div className="row">
-              <label className="field grow"><span>BFF scope (MSAL acquireTokenSilent — this is the BFF's scope, not PartnerAPI's)</span>
-                <input className="mono" value={userScope} onChange={(e) => setUserScope(e.target.value)} placeholder="api://<bff-app-id>/access_as_user" />
-              </label>
-              <button className="secondary" onClick={onAcquireToken}>Pre-fetch token</button>
-            </div>
-          </div>
+        {reqAuth === 'user' && (
+          <span className="muted">
+            {auth.mode === 'msal'
+              ? <>MSAL acquires a bearer token for the BFF and sends it as <code>Authorization: Bearer …</code>. The BFF OBO-exchanges it for PartnerAPI.</>
+              : <>The browser sends only the <code>CMSP_SESSION</code> cookie. The BFF uses the access token stored in the session to perform OBO.</>}
+          </span>
         )}
 
-        {authMode === 's2s' && (
+        {reqAuth === 's2s' && (
           <div className="col">
             <span className="muted">
-              The Web sends a user token to the BFF; the BFF calls the S2S helper which reads a KV certificate
-              using managed identity and acquires a client-credentials token. The private key never leaves Azure.
+              The browser asks the BFF's S2S helper, which reads a KV certificate using managed identity
+              and acquires a client-credentials token. The private key never leaves Azure.
             </span>
             <div className="row">
               <label className="field grow"><span>Tenant ID</span>

@@ -282,8 +282,11 @@ Write-Ok "BFF scope (access_as_user) configured"
 
 Patch-AppManifest -ObjId $state.bffObjId -Body @{
     spa = @{ redirectUris = @("http://localhost:5173","https://localhost:5173") }
+    # Web platform — required for the server-side OIDC sign-in flow (Emerald-style):
+    #   browser → BFF /api/auth/sign-in → Entra → BFF /api/auth/callback (this URI).
+    web = @{ redirectUris = @("http://localhost:5080/api/auth/callback") }
 }
-Write-Ok "BFF SPA redirect URIs set (Web and BFF share this app registration)"
+Write-Ok "BFF redirect URIs set — SPA (localhost:5173) for MSAL + Web (localhost:5080/api/auth/callback) for server-OIDC"
 
 Write-Info "Adding client secret to BFF (for OBO exchange + S2S to OBOPartnerAPIApp)…"
 $bffSecret = az ad app credential reset --id $state.bffAppId --append `
@@ -426,9 +429,10 @@ Write-Ok "PartnerAPI user-secrets set"
 
 # ── src/API/appsettings.json (BFF identity + scopes to reach OBOPartnerAPIApp) ──
 $bffSettings = Get-Content "$API_DIR\appsettings.json" | ConvertFrom-Json
-$bffSettings.AzureAd.TenantId = $TenantId
-$bffSettings.AzureAd.ClientId = $state.bffAppId
-$bffSettings.AzureAd.Audience = "api://$($state.bffAppId)"
+$bffSettings.AzureAd.TenantId        = $TenantId
+$bffSettings.AzureAd.ClientId        = $state.bffAppId
+$bffSettings.AzureAd.Audience        = "api://$($state.bffAppId)"
+$bffSettings.AzureAd.OidcRedirectUri = "http://localhost:5080/api/auth/callback"
 $bffSettings.DownstreamApis.PartnerApi.Scopes    = @("api://$($state.oboAppId)/access_as_user")
 $bffSettings.DownstreamApis.PartnerApi.AppScopes = @("api://$($state.oboAppId)/.default")
 $bffSettings | ConvertTo-Json -Depth 10 | Set-Content "$API_DIR\appsettings.json" -Encoding utf8

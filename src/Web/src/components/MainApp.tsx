@@ -1,7 +1,5 @@
 import { useState } from 'react';
-import { AuthenticationResult } from '@azure/msal-browser';
-import { useMsal } from '@azure/msal-react';
-import { SignInConfig } from './PreSignIn';
+import { useAuth } from '../auth/AuthContext';
 import { WidgetTab } from './tabs/WidgetTab';
 import { OboTab } from './tabs/OboTab';
 import { LogsTab } from './tabs/LogsTab';
@@ -10,28 +8,13 @@ import { logger } from '../utils/logger';
 
 type TabId = 'widget' | 'obo' | 'logs' | 'network';
 
-export function MainApp({
-  config, onReset, authResult, onAcquireToken,
-}: {
-  config: SignInConfig;
-  onReset: () => void;
-  authResult: AuthenticationResult | null;
-  onAcquireToken: () => Promise<AuthenticationResult | null>;
-}) {
-  const { instance, accounts } = useMsal();
+export function MainApp({ onReset }: { onReset: () => void }) {
+  const { user, mode, refresh, signOut } = useAuth();
   const [tab, setTab] = useState<TabId>('widget');
-  const account = accounts[0];
 
-  // Pull OID and PUID from the cached ID-token claims.
-  // OID  — present on both AAD and MSA accounts.
-  // PUID — Passport Unique ID, present on MSA (personal) accounts only.
-  const claims = account?.idTokenClaims as Record<string, string> | undefined;
-  const oid  = claims?.oid  ?? account?.localAccountId;
-  const puid = claims?.puid ?? undefined;
-
-  async function signOut() {
-    logger.info('app', `signing out ${account?.username}`);
-    await instance.logoutPopup({ account });
+  async function handleSignOut() {
+    logger.info('app', `signing out (${mode}) ${user?.upn ?? ''}`);
+    await signOut();
     onReset();
   }
 
@@ -42,17 +25,22 @@ export function MainApp({
         <div className="row">
           {/* User identity block */}
           <div className="col" style={{ gap: '0.15rem', alignItems: 'flex-end' }}>
-            <span className="pill ok">Signed in: {account?.username}</span>
-            {(oid || puid) && (
+            <span className="pill ok">
+              {mode === 'session' ? 'Session: ' : 'Signed in: '}{user?.upn ?? '?'}
+            </span>
+            {(user?.oid || user?.puid) && (
               <div className="row" style={{ gap: '0.75rem', justifyContent: 'flex-end' }}>
-                {oid  && <span className="user-claim" title={`Object ID (OID): ${oid}`}>OID&nbsp;<span className="mono">{oid}</span></span>}
-                {puid && <span className="user-claim" title={`Passport Unique ID (PUID): ${puid}`}>PUID&nbsp;<span className="mono">{puid}</span></span>}
+                {user.oid  && <span className="user-claim" title={`Object ID (OID): ${user.oid}`}>OID&nbsp;<span className="mono">{user.oid}</span></span>}
+                {user.puid && <span className="user-claim" title={`Passport Unique ID (PUID): ${user.puid}`}>PUID&nbsp;<span className="mono">{user.puid}</span></span>}
+                <span className="user-claim" title="Auth mode (browser holds token vs. server-side session)">
+                  AUTH&nbsp;<span className="mono">{mode === 'msal' ? 'MSAL' : 'SESSION'}</span>
+                </span>
               </div>
             )}
           </div>
-          <button className="secondary" onClick={onAcquireToken}>Refresh token</button>
+          <button className="secondary" onClick={() => refresh()}>Refresh</button>
           <button className="secondary" onClick={onReset}>Change config</button>
-          <button className="danger"   onClick={signOut}>Sign out</button>
+          <button className="danger"    onClick={handleSignOut}>Sign out</button>
         </div>
       </header>
 
@@ -64,8 +52,8 @@ export function MainApp({
       </div>
 
       <div className="app-body">
-        {tab === 'widget'  && <WidgetTab  authResult={authResult} onAcquireToken={onAcquireToken} />}
-        {tab === 'obo'     && <OboTab     config={config} authResult={authResult} onAcquireToken={onAcquireToken} />}
+        {tab === 'widget'  && <WidgetTab />}
+        {tab === 'obo'     && <OboTab />}
         {tab === 'logs'    && <LogsTab />}
         {tab === 'network' && <NetworkTab />}
       </div>
